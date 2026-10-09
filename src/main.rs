@@ -1,5 +1,5 @@
-use jwalk::{Parallelism, WalkDir};
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -123,32 +123,62 @@ fn search_one(root: &Path, matcher: &Matcher, mode: SearchMode, stats: &mut Sear
         return;
     }
 
-    let walkdir = WalkDir::new(root)
-        .skip_hidden(true)
-        .parallelism(Parallelism::RayonNewPool(0));
+    search_dir(root, matcher, mode, stats);
+}
 
-    for entry in walkdir.into_iter() {
-        let entry = match entry {
-            Ok(entry) => entry,
+/// 递归搜索目录。
+fn search_dir(path: &Path, matcher: &Matcher, mode: SearchMode, stats: &mut SearchStats) {
+    if path.is_dir() {
+        if matches_kind(path, mode)
+            && matcher.is_match(&path.file_name().unwrap_or_default().to_string_lossy())
+        {
+            println!("{}", path.display());
+            stats.matched += 1;
+        }
+
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
             Err(err) => {
-                stats.add_warning(format!("无法遍历 {}: {}", root.display(), err));
-                continue;
+                stats.add_warning(format!("无法遍历 {}: {}", path.display(), err));
+                return;
             }
         };
 
-        let file_type = entry.file_type();
-        let kind_matches = match mode {
-            SearchMode::Dir => file_type.is_dir(),
-            SearchMode::File => file_type.is_file(),
-            SearchMode::All => file_type.is_dir() || file_type.is_file(),
-        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    stats.add_warning(format!("无法读取 {}: {}", path.display(), err));
+                    continue;
+                }
+            };
 
-        if !kind_matches || !matcher.is_match(&entry.file_name().to_string_lossy()) {
-            continue;
+            let file_name = entry.file_name();
+            if file_name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            if path.is_dir() {
+                search_dir(&path, matcher, mode, stats);
+            } else if path.is_file() && matcher.is_match(&file_name.to_string_lossy()) {
+                println!("{}", path.display());
+                stats.matched += 1;
+            }
         }
-
-        println!("{}", entry.path().display());
+    } else if path.is_file()
+        && matcher.is_match(&path.file_name().unwrap_or_default().to_string_lossy())
+    {
+        println!("{}", path.display());
         stats.matched += 1;
+    }
+}
+
+fn matches_kind(path: &Path, mode: SearchMode) -> bool {
+    match mode {
+        SearchMode::Dir => path.is_dir(),
+        SearchMode::File => path.is_file(),
+        SearchMode::All => true,
     }
 }
 
